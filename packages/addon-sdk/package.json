@@ -1,0 +1,100 @@
+{
+  "name": "@wealthfolio/addon-sdk",
+  "version": "3.11.0",
+  "type": "module",
+  "description": "TypeScript SDK for building Wealthfolio addons with enhanced functionality and type safety",
+  "main": "dist/index.js",
+  "types": "dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/src/index.d.ts"
+    },
+    "./types": {
+      "import": "./dist/types.js",
+      "types": "./dist/src/types.d.ts"
+    },
+    "./host-api": {
+      "import": "./dist/host-api.js",
+      "types": "./dist/src/host-api.d.ts"
+    },
+    "./host-dependencies": {
+      "import": "./dist/host-dependencies.js",
+      "types": "./dist/src/host-dependencies.d.ts"
+    },
+    "./manifest": {
+      "import": "./dist/manifest.js",
+      "types": "./dist/src/manifest.d.ts"
+    },
+    "./permissions": {
+      "import": "./dist/permissions.js",
+      "types": "./dist/src/permissions.d.ts"
+    },
+    "./query-keys": {
+      "import": "./dist/query-keys.js",
+      "types": "./dist/src/query-keys.d.ts"
+    },
+    "./utils": {
+      "import": "./dist/utils.js",
+      "types": "./dist/src/utils.d.ts"
+    },
+    "./goal-progress": {
+      "import": "./dist/goal-progress.js",
+      "types": "./dist/src/goal-progress.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "keywords": [
+    "wealthfolio",
+    "addon",
+    "plugin",
+    "sdk",
+    "typescript",
+    "financial",
+    "portfolio"
+  ],
+  "author": "Wealthfolio Team",
+  "license": "MIT",
+  "homepage": "https://wealthfolio.app/addons",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wealthfolio/wealthfolio.git",
+    "directory": "packages/addon-sdk"
+  },
+  "bugs": {
+    "url": "https://github.com/wealthfolio/wealthfolio/issues"
+  },
+  "scripts": {
+    "build": "tsup && pnpm run build:types",
+    "dev": "tsup --watch",
+    "clean": "rm -rf dist",
+    "lint": "pnpm --dir ../.. exec oxlint --type-aware packages/addon-sdk && pnpm lint:eslint",
+    "lint:fix": "pnpm --dir ../.. exec oxlint --type-aware --fix packages/addon-sdk && pnpm lint:eslint --fix",
+    "lint:quiet": "pnpm --dir ../.. exec oxlint --type-aware --quiet packages/addon-sdk && pnpm lint:eslint --quiet",
+    "lint:eslint": "eslint .",
+    "format": "oxfmt --write .",
+    "format:check": "oxfmt --check .",
+    "type-check": "tsc --noEmit",
+    "build:types": "tsc -p tsconfig.json",
+    "prepack": "npm run build"
+  },
+  "peerDependencies": {
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4"
+  },
+  "devDependencies": {
+    "@tanstack/react-query": "^5.104.5",
+    "@types/react": "^19.2.13",
+    "@types/react-dom": "^19.2.3",
+    "@typescript/native": "npm:typescript@^7.0.2",
+    "tsup": "^8.5.1",
+    "typescript": "npm:@typescript/typescript6@^6.0.2"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

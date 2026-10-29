@@ -1,0 +1,23 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // SDK-specific settings
+    "rootDir": ".",
+    "types": ["react", "react-dom"],
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "outDir": "dist",
+    "noEmit": false,
+
+    // Stricter settings for published SDK
+    "noImplicitReturns": true,
+    "noImplicitOverride": true,
+
+    // Path mapping for SDK package
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": ["src/**/*", "package.json"],
+  "exclude": ["node_modules", "dist", "**/*.test.*", "**/*.spec.*"]
+}

@@ -1,0 +1,69 @@
+{
+  // Editor settings
+  "editor.formatOnSave": true,
+  "editor.defaultFormatter": "oxc.oxc-vscode",
+  "editor.codeActionsOnSave": {
+    "source.fixAll.oxc": "explicit",
+    "source.fixAll.eslint": "explicit",
+    "source.organizeImports": "explicit"
+  },
+
+  // ESLint v9 flat config support
+  "eslint.useFlatConfig": true,
+  "eslint.validate": ["javascript", "javascriptreact", "typescript", "typescriptreact"],
+  "eslint.workingDirectories": ["./apps/frontend", "./packages/ui", "./packages/addon-sdk"],
+
+  // TypeScript settings
+  "js/ts.experimental.useTsgo": true,
+  "js/ts.tsdk.path": "./node_modules/@typescript/native",
+  "typescript.preferences.organizeImportsIgnoreCase": "auto",
+  "typescript.preferences.includePackageJsonAutoImports": "auto",
+  "typescript.inlayHints.parameterNames.enabled": "literals",
+  "typescript.inlayHints.variableTypes.enabled": false,
+  "typescript.inlayHints.functionLikeReturnTypes.enabled": true,
+
+  // Language-specific formatters
+  "[typescript]": {
+    "editor.defaultFormatter": "oxc.oxc-vscode"
+  },
+  "[typescriptreact]": {
+    "editor.defaultFormatter": "oxc.oxc-vscode"
+  },
+  "[javascript]": {
+    "editor.defaultFormatter": "oxc.oxc-vscode"
+  },
+  "[javascriptreact]": {
+    "editor.defaultFormatter": "oxc.oxc-vscode"
+  },
+  "[json]": {
+    "editor.defaultFormatter": "oxc.oxc-vscode"
+  },
+  "[jsonc]": {
+    "editor.defaultFormatter": "oxc.oxc-vscode"
+  },
+  "[markdown]": {
+    "editor.defaultFormatter": "oxc.oxc-vscode"
+  },
+  "[yaml]": {
+    "editor.defaultFormatter": "oxc.oxc-vscode"
+  },
+
+  // Additional helpful settings
+  "files.trimTrailingWhitespace": true,
+  "files.insertFinalNewline": true,
+  "files.trimFinalNewlines": true,
+  "[rust]": {
+    "editor.defaultFormatter": "rust-lang.rust-analyzer"
+  },
+  "kiroAgent.configureMCP": "Disabled",
+
+  // i18n-ally
+  "i18n-ally.localesPaths": ["apps/frontend/src/i18n/locales"],
+  "i18n-ally.pathMatcher": "{locale}/{namespace}.json",
+  "i18n-ally.namespace": true,
+  "i18n-ally.defaultNamespace": "common",
+  "i18n-ally.sourceLanguage": "en",
+  "i18n-ally.displayLanguage": "en",
+  "i18n-ally.keystyle": "nested",
+  "i18n-ally.enabledFrameworks": ["react", "i18next"]
+}

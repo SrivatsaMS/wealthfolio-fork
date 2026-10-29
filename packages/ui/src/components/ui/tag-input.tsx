@@ -1,0 +1,86 @@
+import { Badge } from "./badge";
+import { Button } from "./button";
+import { cn, isKeyboardEventComposing } from "../../lib/utils";
+import { Icons } from "./icons";
+import * as React from "react";
+import { useTranslation } from "react-i18next";
+
+type InputProps = React.ComponentProps<"input">;
+
+type InputTagsProps = Omit<InputProps, "value" | "onChange"> & {
+  value: string[];
+  onChange: React.Dispatch<React.SetStateAction<string[]>>;
+};
+
+const InputTags = React.forwardRef<HTMLInputElement, InputTagsProps>(
+  ({ className, value, onChange, ...props }, ref) => {
+    const { t } = useTranslation();
+    const [pendingDataPoint, setPendingDataPoint] = React.useState("");
+
+    React.useEffect(() => {
+      if (pendingDataPoint.includes(",")) {
+        const newDataPoints = new Set([...value, ...pendingDataPoint.split(",").map((chunk) => chunk.trim())]);
+        onChange(Array.from(newDataPoints));
+        setPendingDataPoint("");
+      }
+    }, [pendingDataPoint, onChange, value]);
+
+    const addPendingDataPoint = () => {
+      if (pendingDataPoint) {
+        const newDataPoints = new Set([...value, pendingDataPoint]);
+        onChange(Array.from(newDataPoints));
+        setPendingDataPoint("");
+      }
+    };
+
+    return (
+      <div
+        className={cn(
+          // caveat: :has() variant requires tailwind v3.4 or above: https://tailwindcss.com/blog/tailwindcss-v3-4#new-has-variant
+          "border-input dark:bg-input/30 bg-input-bg min-h-input-height shadow-xs flex w-full flex-wrap gap-2 rounded-md border px-3 py-1 text-base outline-none transition-[color,box-shadow] disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm",
+          "has-[input:focus-visible]:outline-solid has-[input:focus-visible]:outline-ring has-[input:focus-visible]:outline-2 has-[input:focus-visible]:outline-offset-2",
+          className,
+        )}
+      >
+        {value.map((item: string) => (
+          <Badge key={item} variant="secondary" className="!rounded-md text-xs">
+            {item}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="ms-2 h-3 w-3"
+              aria-label={t("ui:remove", "Remove {{label}}", { label: item })}
+              onClick={() => {
+                onChange(value.filter((i: string) => i !== item));
+              }}
+            >
+              <Icons.X className="w-3" />
+            </Button>
+          </Badge>
+        ))}
+        <input
+          className="placeholder:text-muted-foreground flex-1 outline-none"
+          value={pendingDataPoint}
+          onChange={(e) => setPendingDataPoint(e.target.value)}
+          onKeyDown={(e) => {
+            if (isKeyboardEventComposing(e.nativeEvent)) return;
+
+            if (e.key === "Enter" || e.key === ",") {
+              e.preventDefault();
+              addPendingDataPoint();
+            } else if (e.key === "Backspace" && pendingDataPoint.length === 0 && value.length > 0) {
+              e.preventDefault();
+              onChange(value.slice(0, -1));
+            }
+          }}
+          {...props}
+          ref={ref}
+        />
+      </div>
+    );
+  },
+);
+
+InputTags.displayName = "InputTags";
+
+export { InputTags };

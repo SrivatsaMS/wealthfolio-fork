@@ -1,0 +1,472 @@
+import { saveActivities, updateToolResult } from "@/adapters";
+import { Alert, AlertDescription, AlertTitle } from "@wealthfolio/ui/components/ui/alert";
+import { useBalancePrivacy } from "@/hooks/use-balance-privacy";
+import { useSettingsContext } from "@/lib/settings-provider";
+import { cn } from "@/lib/utils";
+import type { ToolCallMessagePartProps } from "@assistant-ui/react";
+import { makeAssistantToolUI } from "@assistant-ui/react";
+import {
+  Badge,
+  Button,
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  Skeleton,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  useAmountFormatting,
+  useDateFormatting,
+  useNumberFormatting,
+  Spinner,
+} from "@wealthfolio/ui";
+import { Icons } from "@wealthfolio/ui/components/ui/icons";
+import type { TFunction } from "i18next";
+import { memo, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { useRuntimeContext } from "../../hooks/use-runtime-context";
+import type {
+  RecordActivitiesArgs,
+  RecordActivitiesOutput,
+  RecordActivitiesSubmissionStatus,
+} from "../../types";
+import {
+  buildRecordActivitiesCreatePayload,
+  mapRecordActivitiesSubmission,
+  normalizeRecordActivitiesResult,
+} from "./record-activities-tool-utils";
+import {
+  createActivityAmountFormatter,
+  createActivityPriceFormatter,
+  createActivityQuantityFormatter,
+  estimateDraftAmount,
+  formatActivityAmount,
+  formatActivityDate,
+  formatActivityQuantity,
+  formatActivityType,
+  getActivityTypeBadge,
+} from "./shared";
+
+type RecordActivitiesToolUIContentProps = ToolCallMessagePartProps<
+  RecordActivitiesArgs,
+  RecordActivitiesOutput
+>;
+
+interface RowStatusBadge {
+  label: string;
+  variant: "default" | "secondary" | "destructive" | "outline";
+  className: string;
+}
+
+function countStatuses(statuses: RecordActivitiesSubmissionStatus[]): {
+  createdCount: number;
+  errorCount: number;
+} {
+  return {
+    createdCount: statuses.filter((entry) => entry.status === "submitted").length,
+    errorCount: statuses.filter((entry) => entry.status === "error").length,
+  };
+}
+
+function RecordActivitiesLoadingSkeleton() {
+  return (
+    <Card className="bg-muted/40 border-primary/10 w-full overflow-hidden">
+      <CardHeader className="pb-2">
+        <div className="flex items-center justify-between gap-2">
+          <Skeleton className="h-5 w-40" />
+          <Skeleton className="h-5 w-24" />
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3 px-0 pb-0">
+        <div className="px-6">
+          <Skeleton className="h-8 w-full" />
+        </div>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              {/* Matches the 10 real columns: date, type, symbol, qty,
+                  price, amount, fee, tax, account, status. */}
+              {Array.from({ length: 10 }).map((_, i) => (
+                <TableHead key={i}>
+                  <Skeleton className="h-3 w-12" />
+                </TableHead>
+              ))}
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {Array.from({ length: 4 }).map((_, row) => (
+              <TableRow key={row}>
+                {Array.from({ length: 10 }).map((_, col) => (
+                  <TableCell key={col}>
+                    <Skeleton className="h-4 w-full" />
+                  </TableCell>
+                ))}
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </CardContent>
+    </Card>
+  );
+}
+
+function getRowStatusBadge(
+  status: RecordActivitiesSubmissionStatus | undefined,
+  isValid: boolean,
+  t: TFunction,
+): RowStatusBadge {
+  if (status?.status === "submitted") {
+    return {
+      label: t("ai:recordActivities.submitted"),
+      variant: "default",
+      className: "",
+    };
+  }
+  if (status?.status === "error") {
+    return { label: t("ai:recordActivities.error"), variant: "destructive", className: "" };
+  }
+  if (isValid) {
+    return { label: t("ai:recordActivities.ready"), variant: "outline", className: "" };
+  }
+  return { label: t("ai:recordActivities.invalid"), variant: "secondary", className: "" };
+}
+
+function RecordActivitiesToolUIContentImpl({
+  result,
+  status,
+  toolCallId,
+}: RecordActivitiesToolUIContentProps) {
+  const amountFormatting = useAmountFormatting();
+  const numberFormatting = useNumberFormatting();
+  const dateFormatting = useDateFormatting();
+
+  const { t } = useTranslation();
+  const { settings } = useSettingsContext();
+  const baseCurrency = settings?.baseCurrency ?? "USD";
+  const { isBalanceHidden } = useBalancePrivacy();
+  const runtime = useRuntimeContext();
+  const threadId = runtime.currentThreadId;
+  const parsed = useMemo(
+    () => normalizeRecordActivitiesResult(result, baseCurrency),
+    [baseCurrency, result],
+  );
+  const amountFormatter = useMemo(
+    () => createActivityAmountFormatter(amountFormatting),
+    [amountFormatting],
+  );
+  const priceFormatter = useMemo(
+    () => createActivityPriceFormatter(amountFormatting),
+    [amountFormatting],
+  );
+  const quantityFormatter = useMemo(
+    () => createActivityQuantityFormatter(numberFormatting),
+    [numberFormatting],
+  );
+
+  const [localStatuses, setLocalStatuses] = useState<RecordActivitiesSubmissionStatus[]>([]);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitSummary, setSubmitSummary] = useState<{
+    createdCount: number;
+    errorCount: number;
+  } | null>(null);
+
+  const isLoading = status?.type === "running";
+  const isIncomplete = status?.type === "incomplete";
+
+  const mergedStatuses = useMemo(() => {
+    const map = new Map<number, RecordActivitiesSubmissionStatus>();
+    for (const row of parsed?.rowStatuses ?? []) map.set(row.rowIndex, row);
+    for (const row of localStatuses) map.set(row.rowIndex, row);
+    return map;
+  }, [localStatuses, parsed?.rowStatuses]);
+
+  const rows = parsed?.drafts ?? [];
+  const pendingValidRows = rows.filter((row) => {
+    if (!row.validation.isValid) return false;
+    return mergedStatuses.get(row.rowIndex)?.status !== "submitted";
+  });
+  const canSubmit = pendingValidRows.length > 0 && !isSubmitting;
+
+  const totalRows = parsed?.validation.totalRows ?? rows.length;
+  const validRows =
+    parsed?.validation.validRows ?? rows.filter((row) => row.validation.isValid).length;
+  const errorRows =
+    parsed?.validation.errorRows ?? rows.filter((row) => !row.validation.isValid).length;
+
+  if (isLoading) return <RecordActivitiesLoadingSkeleton />;
+
+  if (isIncomplete) {
+    return (
+      <Alert variant="destructive">
+        <Icons.AlertCircle />
+        <AlertTitle>{t("ai:recordActivities.failedPrepare")}</AlertTitle>
+      </Alert>
+    );
+  }
+
+  if (!parsed) {
+    return (
+      <Alert variant="destructive">
+        <Icons.AlertCircle />
+        <AlertTitle>{t("ai:recordActivities.noBatchDraft")}</AlertTitle>
+      </Alert>
+    );
+  }
+
+  const handleSubmit = async () => {
+    if (!canSubmit) return;
+    setIsSubmitting(true);
+    setSubmitError(null);
+
+    try {
+      const { creates, rowIndexByTempId } = buildRecordActivitiesCreatePayload(pendingValidRows);
+      if (creates.length === 0) {
+        setSubmitError(t("ai:recordActivities.noValidRows"));
+        return;
+      }
+
+      const saveResult = await saveActivities({
+        creates,
+        updates: [],
+        deleteIds: [],
+      });
+
+      const submission = mapRecordActivitiesSubmission(saveResult, rowIndexByTempId);
+      const mergedMap = new Map<number, RecordActivitiesSubmissionStatus>(mergedStatuses);
+      for (const statusEntry of submission.rowStatuses) {
+        mergedMap.set(statusEntry.rowIndex, statusEntry);
+      }
+      const mergedRowStatuses = [...mergedMap.values()].sort((a, b) => a.rowIndex - b.rowIndex);
+      setLocalStatuses(mergedRowStatuses);
+      setSubmitSummary({
+        createdCount: submission.createdCount,
+        errorCount: submission.errorCount,
+      });
+
+      const remainingValidRows = rows.filter((row) => {
+        if (!row.validation.isValid) return false;
+        return mergedMap.get(row.rowIndex)?.status !== "submitted";
+      }).length;
+      const mergedStatusSummary = countStatuses(mergedRowStatuses);
+
+      if (threadId && toolCallId) {
+        try {
+          await updateToolResult({
+            threadId,
+            toolCallId,
+            resultPatch: {
+              submitted: remainingValidRows === 0,
+              createdCount: mergedStatusSummary.createdCount,
+              errorCount: mergedStatusSummary.errorCount,
+              rowStatuses: mergedRowStatuses,
+              submittedAt: new Date().toISOString(),
+            },
+          });
+        } catch (error) {
+          console.error("Failed to persist record_activities tool state:", error);
+        }
+      }
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : t("ai:recordActivities.failedSave"));
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const persistedSummary = {
+    createdCount: parsed.createdCount ?? 0,
+    errorCount: parsed.errorCount ?? 0,
+  };
+
+  return (
+    <Card className="bg-muted/40 border-primary/10 w-full overflow-hidden">
+      <CardHeader className="pb-2">
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <CardTitle className="text-sm font-medium">
+              {t("ai:recordActivities.batchPreview")}
+            </CardTitle>
+            <p className="text-muted-foreground mt-1 text-xs">
+              {t("ai:recordActivities.reviewHint")}
+            </p>
+          </div>
+          <Badge variant="outline" className="text-xs">
+            {t("ai:recordActivities.readyCount", { count: validRows })}
+          </Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3 px-0 pb-3">
+        <div className="grid grid-cols-2 gap-2 px-6 text-xs md:grid-cols-4">
+          <div className="rounded-md border px-2 py-1">
+            {t("ai:recordActivities.rows", { count: totalRows })}
+          </div>
+          <div className="rounded-md border px-2 py-1">
+            {t("ai:recordActivities.valid", { count: validRows })}
+          </div>
+          <div className="rounded-md border px-2 py-1">
+            {t("ai:recordActivities.errors", { count: errorRows })}
+          </div>
+          <div className="rounded-md border px-2 py-1">
+            {t("ai:recordActivities.willCreate", { count: pendingValidRows.length })}
+          </div>
+        </div>
+
+        <div className="max-h-90 overflow-y-auto">
+          <Table>
+            <TableHeader>
+              <TableRow className="hover:bg-transparent">
+                <TableHead className="ps-4 text-xs">{t("ai:recordActivities.date")}</TableHead>
+                <TableHead className="text-xs">{t("ai:recordActivities.type")}</TableHead>
+                <TableHead className="text-xs">{t("ai:recordActivities.symbol")}</TableHead>
+                <TableHead className="text-end text-xs">{t("ai:recordActivities.qty")}</TableHead>
+                <TableHead className="text-end text-xs">{t("ai:recordActivities.price")}</TableHead>
+                <TableHead className="text-end text-xs">
+                  {t("ai:recordActivities.amount")}
+                </TableHead>
+                <TableHead className="text-end text-xs">{t("ai:recordActivities.fee")}</TableHead>
+                <TableHead className="text-end text-xs">{t("ai:recordActivities.tax")}</TableHead>
+                <TableHead className="text-xs">{t("ai:recordActivities.account")}</TableHead>
+                <TableHead className="pe-4 text-xs">{t("ai:recordActivities.status")}</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map((row) => {
+                const activityBadge = getActivityTypeBadge(row.draft.activityType);
+                const statusEntry = mergedStatuses.get(row.rowIndex);
+                const rowStatusBadge = getRowStatusBadge(statusEntry, row.validation.isValid, t);
+                return (
+                  <TableRow key={row.rowIndex} className="text-xs">
+                    <TableCell className="py-2 ps-4 tabular-nums">
+                      {formatActivityDate(row.draft.activityDate, dateFormatting)}
+                    </TableCell>
+                    <TableCell className="py-2">
+                      <Badge
+                        variant={activityBadge.variant}
+                        className={cn("text-2xs uppercase", activityBadge.className)}
+                      >
+                        {formatActivityType(row.draft.activityType)}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="py-2">{row.draft.symbol ?? "-"}</TableCell>
+                    <TableCell className="py-2 text-end tabular-nums">
+                      {formatActivityQuantity(
+                        row.draft.quantity,
+                        quantityFormatter,
+                        isBalanceHidden,
+                      )}
+                    </TableCell>
+                    <TableCell className="py-2 text-end tabular-nums">
+                      {formatActivityAmount(
+                        row.draft.unitPrice,
+                        priceFormatter,
+                        isBalanceHidden,
+                        row.draft.currency,
+                      )}
+                    </TableCell>
+                    <TableCell className="py-2 text-end tabular-nums">
+                      {formatActivityAmount(
+                        // Stated amounts verbatim; trade totals preview the
+                        // mirror calc (the backend derives them at commit).
+                        estimateDraftAmount(row.draft, row.resolvedAsset?.instrumentType),
+                        amountFormatter,
+                        isBalanceHidden,
+                        row.draft.currency,
+                      )}
+                    </TableCell>
+                    <TableCell className="py-2 text-end tabular-nums">
+                      {formatActivityAmount(
+                        row.draft.fee,
+                        amountFormatter,
+                        isBalanceHidden,
+                        row.draft.currency,
+                      )}
+                    </TableCell>
+                    <TableCell className="py-2 text-end tabular-nums">
+                      {formatActivityAmount(
+                        row.draft.tax,
+                        amountFormatter,
+                        isBalanceHidden,
+                        row.draft.currency,
+                      )}
+                    </TableCell>
+                    <TableCell className="py-2">
+                      {row.draft.accountName ?? row.draft.accountId ?? "-"}
+                    </TableCell>
+                    <TableCell className="py-2 pe-4">
+                      <div className="space-y-1">
+                        <Badge
+                          variant={rowStatusBadge.variant}
+                          className={cn("text-2xs uppercase", rowStatusBadge.className)}
+                        >
+                          {rowStatusBadge.label}
+                        </Badge>
+                        {statusEntry?.error && (
+                          <p className="text-destructive text-2xs max-w-45 truncate">
+                            {statusEntry.error}
+                          </p>
+                        )}
+                        {!statusEntry?.error &&
+                          row.errors[0] &&
+                          statusEntry?.status !== "submitted" && (
+                            <p className="text-muted-foreground text-2xs max-w-45 truncate">
+                              {row.errors[0]}
+                            </p>
+                          )}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </div>
+
+        {submitError && (
+          <Alert variant="destructive" className="mx-6 w-auto px-3 py-2 text-xs">
+            <Icons.AlertCircle />
+            <AlertDescription>{submitError}</AlertDescription>
+          </Alert>
+        )}
+
+        {(submitSummary || parsed.submittedAt) && (
+          <div className="text-muted-foreground px-6 text-xs">
+            {t("ai:recordActivities.createdSummary", {
+              created: (submitSummary?.createdCount ?? persistedSummary.createdCount) || 0,
+              errors: (submitSummary?.errorCount ?? persistedSummary.errorCount) || 0,
+            })}
+          </div>
+        )}
+
+        <div className="flex items-center justify-end px-6 pt-1">
+          <Button onClick={handleSubmit} disabled={!canSubmit}>
+            {isSubmitting ? (
+              <Spinner className="me-2 h-4 w-4" />
+            ) : (
+              <Icons.Check className="me-2 h-4 w-4" />
+            )}
+            {pendingValidRows.length > 0
+              ? t("ai:recordActivities.confirmActivities", { count: pendingValidRows.length })
+              : t("ai:recordActivities.confirmActivitiesEmpty")}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+const RecordActivitiesToolUIContent = memo(RecordActivitiesToolUIContentImpl);
+
+export const RecordActivitiesToolUI = makeAssistantToolUI<
+  RecordActivitiesArgs,
+  RecordActivitiesOutput
+>({
+  toolName: "record_activities",
+  render: (props) => {
+    return <RecordActivitiesToolUIContent {...props} />;
+  },
+});

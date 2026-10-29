@@ -1,0 +1,44 @@
+{
+  "compilerOptions": {
+    // Target and module settings
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+
+    // Module resolution
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "react-jsx",
+
+    // Strict type checking
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitReturns": false,
+    "noImplicitOverride": true,
+
+    // Additional checks (exactOptionalPropertyTypes disabled for better library compatibility)
+    "noImplicitAny": true,
+    "noImplicitThis": true,
+    "strictNullChecks": true,
+    "strictFunctionTypes": true,
+    "strictBindCallApply": true,
+    "strictPropertyInitialization": true,
+    // No "alwaysStrict": "strict" already turns it on for tsc, and Vite would pass it to esbuild,
+    // which puts "use strict" above "use client" and makes the build print sourcemap errors.
+
+    // Path mapping (will be overridden in workspace configs)
+    "paths": {},
+
+    // Enable composite builds for project references
+    "composite": true
+  },
+  "exclude": ["node_modules", "dist", "build", "coverage"]
+}

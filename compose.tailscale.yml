@@ -1,0 +1,78 @@
+# Wealthfolio + Tailscale sidecar, no .env file needed.
+#
+#   docker compose -f compose.tailscale.yml up -d
+#
+# Replace every REPLACE_… value below before starting. Reach the server from
+# any device on your tailnet at:
+#   http://<tailscale-ip>:8088            (plain HTTP inside the WireGuard tunnel)
+#   https://wealthfolio.<tailnet>.ts.net  (optional HTTPS via `tailscale serve`)
+#
+# Nothing is published on the host, so the server is not reachable from your
+# LAN or the internet, only from your tailnet. Already running your own sidecar?
+# Copy just the `wealthfolio` service and point `network_mode` at your sidecar's
+# service name (network_mode: service:<your-sidecar>).
+
+services:
+  tailscale:
+    image: tailscale/tailscale:stable
+    container_name: wealthfolio-tailscale
+    hostname: wealthfolio
+    restart: unless-stopped
+    environment:
+      TS_AUTHKEY: "REPLACE_WITH_TAILSCALE_AUTH_KEY"
+      TS_STATE_DIR: /var/lib/tailscale
+      # Optional HTTPS on https://wealthfolio.<tailnet>.ts.net. Delete this line
+      # (and the serve.json volume) if you only use http://<tailscale-ip>:8088.
+      TS_SERVE_CONFIG: /config/serve.json
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+      - ./deploy/tailscale/serve.json:/config/serve.json:ro
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - net_admin
+
+  wealthfolio:
+    # Built by the "Custom build" GitHub Actions workflow of your repository.
+    image: ghcr.io/srivatsams/wealthfolio-fork:latest
+    container_name: wealthfolio
+    restart: unless-stopped
+    # Shares the sidecar's network: port 8088 is reachable at the sidecar's
+    # Tailscale IP, and nowhere else.
+    network_mode: service:tailscale
+    depends_on:
+      - tailscale
+    volumes:
+      - wealthfolio-data:/data
+    environment:
+      # Listening on all interfaces of the sidecar's namespace (tailnet only).
+      # Non-loopback, so the server refuses to start without authentication.
+      WF_LISTEN_ADDR: "0.0.0.0:8088"
+      WF_DB_PATH: /data/wealthfolio.db
+      # Generate once with: openssl rand -base64 32   (keep it; backups need it)
+      WF_SECRET_KEY: "REPLACE_WITH_OUTPUT_OF_openssl_rand_base64_32"
+      # Argon2id hash of your password. In YAML every $ must be doubled ($$).
+      #   printf 'your-password' | argon2 "$(openssl rand -hex 8)" -id -e | sed 's/\$/$$/g'
+      WF_AUTH_PASSWORD_HASH: "REPLACE_WITH_DOUBLED_DOLLAR_ARGON2_HASH"
+      WF_AUTH_TOKEN_TTL_MINUTES: "1440"
+      # Every address you open the server at (comma-separated, no trailing slash).
+      WF_CORS_ALLOW_ORIGINS: "http://REPLACE_WITH_TAILSCALE_IP:8088,https://wealthfolio.REPLACE_WITH_TAILNET.ts.net"
+      # "auto": Secure cookie over HTTPS, normal cookie over http://100.x:8088.
+      WF_COOKIE_SECURE: "auto"
+      WF_REQUEST_TIMEOUT_MS: "30000"
+    healthcheck:
+      test:
+        ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:8088/api/v1/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64M
+
+volumes:
+  tailscale-state:
+  wealthfolio-data:

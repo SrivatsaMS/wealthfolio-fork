@@ -1,0 +1,89 @@
+//! Capture the tool-call trace from a chat turn.
+//!
+//! The runner subscribes to the `AiStreamEvent` stream emitted by
+//! `ChatService::send_message` and records every `ToolCall` event. The
+//! resulting `ToolTrace` is what we assert against expected/forbidden/max.
+
+use std::collections::HashMap;
+
+use crate::types::{AiStreamEvent, UsageStats};
+use serde_json::Value;
+
+/// One observed tool invocation from the agent.
+#[derive(Debug, Clone)]
+pub struct CapturedToolCall {
+    pub id: String,
+    pub name: String,
+    pub args: Value,
+}
+
+/// What a tool call returned.
+#[derive(Debug, Clone)]
+pub struct CapturedToolResult {
+    pub success: bool,
+    pub data: Value,
+    pub error: Option<String>,
+}
+
+/// All tool calls fired during one chat turn, in order, plus the final text.
+#[derive(Debug, Clone, Default)]
+pub struct ToolTrace {
+    pub tool_calls: Vec<CapturedToolCall>,
+    /// Results by tool call id.
+    pub tool_results: HashMap<String, CapturedToolResult>,
+    pub final_text: String,
+    /// True if the stream emitted an error event.
+    pub had_error: bool,
+    pub error_message: Option<String>,
+    /// Token usage the done event reported for the turn.
+    pub usage: Option<UsageStats>,
+}
+
+impl ToolTrace {
+    pub fn names(&self) -> Vec<&str> {
+        self.tool_calls.iter().map(|c| c.name.as_str()).collect()
+    }
+
+    pub fn count(&self, name: &str) -> usize {
+        self.tool_calls.iter().filter(|c| c.name == name).count()
+    }
+
+    pub fn first_with_name(&self, name: &str) -> Option<&CapturedToolCall> {
+        self.tool_calls.iter().find(|c| c.name == name)
+    }
+
+    /// Append a stream event to the trace.
+    pub fn ingest(&mut self, event: &AiStreamEvent) {
+        match event {
+            AiStreamEvent::ToolCall { tool_call, .. } => {
+                self.tool_calls.push(CapturedToolCall {
+                    id: tool_call.id.clone(),
+                    name: tool_call.name.clone(),
+                    args: tool_call.arguments.clone(),
+                });
+            }
+            AiStreamEvent::ToolResult { result, .. } => {
+                self.tool_results.insert(
+                    result.tool_call_id.clone(),
+                    CapturedToolResult {
+                        success: result.success,
+                        data: result.data.clone(),
+                        error: result.error.clone(),
+                    },
+                );
+            }
+            AiStreamEvent::TextDelta { delta, .. } => {
+                self.final_text.push_str(delta);
+            }
+            AiStreamEvent::Error { message, .. } => {
+                self.had_error = true;
+                self.error_message = Some(message.clone());
+            }
+            AiStreamEvent::Done { message, usage, .. } => {
+                self.final_text = message.content.get_text_content();
+                self.usage = usage.as_deref().cloned();
+            }
+            _ => {}
+        }
+    }
+}

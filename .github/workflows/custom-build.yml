@@ -1,0 +1,313 @@
+# Builds this fork's customized apps on GitHub: Docker image (server), Android
+# APK/AAB and macOS .app/.dmg. Every build is uploaded as a workflow artifact;
+# publishing a GitHub Release also attaches them to the release. The build jobs
+# run in parallel with the lint/test job, so a failing check never withholds
+# the executables (check its result separately).
+#
+# Use release tags that do NOT start with "v" (for example custom-3.11.0-1):
+# the upstream release.yml and docker-publish.yml run on "v*" tags and need the
+# upstream project's signing and Docker Hub secrets.
+#
+# Optional secrets (builds still succeed without them, unsigned / test-signed):
+#   ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD
+#   APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
+#   APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID   (notarization with an app-specific password)
+name: Custom build
+
+on:
+  push:
+    branches: [main, "custom/**"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      android:
+        description: Build Android
+        type: boolean
+        default: true
+      macos:
+        description: Build macOS
+        type: boolean
+        default: true
+      docker:
+        description: Build Docker image
+        type: boolean
+        default: true
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: custom-build-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+  # Disables in-app updates from the upstream project, which would replace this build.
+  WEALTHFOLIO_UPDATE_EXPLANATION:
+    "This is a custom build. Download new versions from your fork's GitHub Releases."
+
+jobs:
+  checks:
+    name: Lint and tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: custom-checks
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libsoup-3.0-dev pkg-config libssl-dev
+      - run: pnpm install --frozen-lockfile
+      - name: Translations, formatting, lint and types
+        run: pnpm check
+      - name: Frontend tests
+        run: pnpm --filter frontend exec vitest run
+      - name: Rust formatting
+        run: cargo fmt --all -- --check
+      - name: Rust tests (core, spending, storage, server)
+        env:
+          CONNECT_API_URL: http://test.local
+        run:
+          cargo test --locked -p wealthfolio-core -p wealthfolio-spending -p
+          wealthfolio-storage-sqlite -p wealthfolio-server
+      - name: Tauri app compiles and its tests pass
+        env:
+          CONNECT_API_URL: http://test.local
+        run: |
+          mkdir -p dist && printf '<!DOCTYPE html><html></html>' > dist/index.html
+          cargo test --locked -p wealthfolio-app --lib server_mode
+
+  docker:
+    name: Docker image
+    if: github.event_name != 'workflow_dispatch' || inputs.docker
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Connect build configuration
+        run: python3 .github/scripts/check_connect_build.py --github-env
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Image name
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=sha,format=long
+            type=ref,event=branch
+            type=ref,event=pr
+            type=raw,value={{tag}},enable=${{ github.event_name == 'release' }}
+            type=raw,value=latest,enable=${{ github.event_name == 'release' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+      - name: Log into GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # The Dockerfile cross-compiles with tonistiigi/xx, so both architectures
+      # build on this amd64 runner without emulating the Rust compiler.
+      - name: Build (and push outside pull requests)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke test the amd64 image
+        run: |
+          docker buildx build --load --platform linux/amd64 -t wealthfolio-custom:smoke --cache-from type=gha .
+          python3 .github/scripts/encryption_smoke.py --image wealthfolio-custom:smoke
+
+  android:
+    name: Android APK / AAB
+    if: github.event_name != 'workflow_dispatch' || inputs.android
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      # Write is used only to attach files to a published GitHub Release.
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+      - name: Install Android Rust target
+        run: rustup target add aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: custom-android
+      - name: Install Android build tools
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;28.2.13676358" "platforms;android-36" "build-tools;36.0.0"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
+          echo "RANLIB_aarch64_linux_android=$ANDROID_HOME/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib" >> "$GITHUB_ENV"
+      - run: pnpm install --frozen-lockfile
+      - name: Initialize local Android build files
+        run: |
+          pnpm tauri android init --ci --skip-targets-install
+          git restore -- apps/tauri/gen/android
+      - name: Check Connect build configuration
+        run: python3 .github/scripts/check_connect_build.py --github-env
+      - name: Build release-mode ARM64 APK and AAB
+        run: pnpm tauri android build --ci --apk --aab --target aarch64 -- --locked
+      - name: Sign the APK and AAB
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          build_tools="$ANDROID_HOME/build-tools/36.0.0"
+          apk=$(find apps/tauri/gen/android/app/build/outputs/apk -name '*-release-unsigned.apk' | head -n1)
+          aab=$(find apps/tauri/gen/android/app/build/outputs/bundle -name '*.aab' | head -n1)
+          test -f "$apk"
+          "$build_tools/zipalign" -P 16 -f 4 "$apk" "$RUNNER_TEMP/aligned.apk"
+          if [ -n "${ANDROID_KEYSTORE_BASE64:-}" ]; then
+            echo "Signing with the release keystore from secrets"
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            "$build_tools/apksigner" sign --ks "$RUNNER_TEMP/release.keystore" \
+              --ks-key-alias "$ANDROID_KEY_ALIAS" --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
+              --key-pass env:ANDROID_KEY_PASSWORD \
+              --out artifacts/wealthfolio-custom-android-arm64.apk "$RUNNER_TEMP/aligned.apk"
+            if [ -f "$aab" ]; then
+              cp "$aab" artifacts/wealthfolio-custom-android.aab
+              jarsigner -keystore "$RUNNER_TEMP/release.keystore" \
+                -storepass:env ANDROID_KEYSTORE_PASSWORD -keypass:env ANDROID_KEY_PASSWORD \
+                artifacts/wealthfolio-custom-android.aab "$ANDROID_KEY_ALIAS"
+            fi
+            rm -f "$RUNNER_TEMP/release.keystore"
+          else
+            echo "::notice::No Android signing secrets: the APK is signed with a throwaway test key (installable, but it cannot update an APK signed by another run). The AAB is left unsigned."
+            keytool -genkeypair -noprompt -keystore "$RUNNER_TEMP/test.keystore" \
+              -storepass android -keypass android -alias androidtestkey \
+              -keyalg RSA -keysize 2048 -validity 30 -dname "CN=Wealthfolio Custom Test"
+            "$build_tools/apksigner" sign --ks "$RUNNER_TEMP/test.keystore" \
+              --ks-key-alias androidtestkey --ks-pass pass:android --key-pass pass:android \
+              --out artifacts/wealthfolio-custom-android-arm64-test.apk "$RUNNER_TEMP/aligned.apk"
+            if [ -f "$aab" ]; then cp "$aab" artifacts/wealthfolio-custom-android-unsigned.aab; fi
+          fi
+          "$build_tools/apksigner" verify --verbose artifacts/*.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wealthfolio-custom-android-${{ github.sha }}
+          path: artifacts/*
+          if-no-files-found: error
+      - name: Attach to the GitHub Release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" artifacts/* --clobber
+
+  macos:
+    name: macOS app (${{ matrix.target }})
+    if: github.event_name != 'workflow_dispatch' || inputs.macos
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+    runs-on: macos-14
+    timeout-minutes: 90
+    permissions:
+      # Write is used only to attach files to a published GitHub Release.
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - name: Install Rust target
+        run: rustup target add ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: custom-macos-${{ matrix.target }}
+      - run: pnpm install --frozen-lockfile
+      - name: Check Connect build configuration
+        run: python3 .github/scripts/check_connect_build.py --github-env
+      - name: Import signing certificate (when configured)
+        id: signing
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          if [ -n "${APPLE_CERTIFICATE:-}" ] && [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
+            echo "identity=$APPLE_SIGNING_IDENTITY" >> "$GITHUB_OUTPUT"
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            # Ad-hoc signature: runs on this Mac after the user approves it once;
+            # it is NOT a Developer ID signature and is not notarized.
+            echo "identity=-" >> "$GITHUB_OUTPUT"
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No Apple signing secrets: building an ad-hoc signed, un-notarized app."
+          fi
+      - name: Build .app and .dmg
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY:
+            ${{ steps.signing.outputs.signed == 'true' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          config=$(node -e '
+            const identity = process.argv[1];
+            console.log(JSON.stringify({
+              bundle: { createUpdaterArtifacts: false, macOS: { signingIdentity: identity } },
+            }));
+          ' "${{ steps.signing.outputs.identity }}")
+          pnpm tauri build --target ${{ matrix.target }} --bundles app,dmg --config "$config"
+      - name: Collect artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          bundle=target/${{ matrix.target }}/release/bundle
+          app=$(find "$bundle/macos" -maxdepth 1 -name '*.app' | head -n1)
+          dmg=$(find "$bundle/dmg" -maxdepth 1 -name '*.dmg' | head -n1)
+          test -d "$app" && test -f "$dmg"
+          codesign --verify --deep --verbose=2 "$app" || true
+          ditto -c -k --keepParent "$app" "artifacts/Wealthfolio-custom-${{ matrix.target }}.app.zip"
+          cp "$dmg" "artifacts/Wealthfolio-custom-${{ matrix.target }}.dmg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wealthfolio-custom-macos-${{ matrix.target }}-${{ github.sha }}
+          path: artifacts/*
+          if-no-files-found: error
+      - name: Attach to the GitHub Release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" artifacts/* --clobber

@@ -1,0 +1,339 @@
+import { TickerAvatar } from "@/components/ticker-avatar";
+import { useAccounts } from "@/hooks/use-accounts";
+import type { DriftHoldingRow, DriftReport } from "@/lib/types";
+import { cn } from "@/lib/utils";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+  useAmountFormatting,
+  type FormattingApi,
+  useDateFormatting,
+  useNumberFormatting,
+} from "@wealthfolio/ui";
+import type { TFunction } from "i18next";
+import { useMemo } from "react";
+import { useTranslation } from "react-i18next";
+import { useNavigate } from "react-router-dom";
+import { formatPp } from "./drift-copy";
+
+interface HoldingsTableProps {
+  report: DriftReport;
+}
+
+const EMPTY_DRIFT_ROWS: DriftHoldingRow[] = [];
+
+function driftColor(driftBps: number): string {
+  if (driftBps > 0) return "text-allocation-over";
+  if (driftBps < 0) return "text-allocation-under";
+  return "text-muted-foreground";
+}
+
+function cashSymbol(currency: string): string {
+  if (currency === "USD") return "$";
+  if (currency === "CAD") return "C$";
+  if (currency === "BTC") return "₿";
+  if (currency.length <= 2) return currency;
+  return currency.slice(0, 2);
+}
+
+function HoldingAvatar({
+  isCash,
+  symbol,
+  assetId,
+  exchangeMic,
+  instrumentType,
+  className = "size-6",
+}: {
+  isCash: boolean;
+  symbol: string;
+  assetId?: string;
+  exchangeMic?: string | null;
+  instrumentType?: string | null;
+  className?: string;
+}) {
+  if (isCash) {
+    return (
+      <span
+        className={cn(
+          "bg-primary/80 dark:bg-primary/20 text-2xs flex shrink-0 items-center justify-center rounded-full font-semibold text-white",
+          className,
+        )}
+      >
+        {cashSymbol(symbol)}
+      </span>
+    );
+  }
+
+  return (
+    <TickerAvatar
+      symbol={symbol === "-" ? "?" : symbol}
+      assetId={assetId}
+      exchangeMic={exchangeMic}
+      instrumentType={instrumentType}
+      className={cn("shrink-0", className)}
+    />
+  );
+}
+
+function formatUpdatedAt(date: Date, formatting: Pick<FormattingApi, "formatDate">): string {
+  return formatting
+    .formatDate(date, {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      timeZoneName: "short",
+    })
+    .replace(/\bE[DS]T\b/, "ET");
+}
+
+function accountLabelForRow(
+  row: DriftHoldingRow,
+  accountMap: Map<string, string>,
+  t: TFunction,
+): string {
+  if (row.sourceAccountIds && row.sourceAccountIds.length > 0) {
+    const names = row.sourceAccountIds.map((id) => accountMap.get(id) ?? id).filter(Boolean);
+    if (names.length === 1) return names[0];
+    if (names.length > 1) return t("allocation:holdings.accountCount", { count: names.length });
+  }
+  return accountMap.get(row.accountId) ?? row.accountId;
+}
+
+function canNavigateToHolding(row: DriftHoldingRow): boolean {
+  return !row.isCash && row.assetId.trim().length > 0;
+}
+
+export function HoldingsTable({ report }: HoldingsTableProps) {
+  const dateFormatting = useDateFormatting();
+  const formatting = useAmountFormatting();
+  const numberFormatting = useNumberFormatting();
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const { accounts } = useAccounts();
+
+  const accountMap = useMemo(() => new Map(accounts.map((a) => [a.id, a.name])), [accounts]);
+  const updatedAt = useMemo(() => formatUpdatedAt(new Date(), dateFormatting), [dateFormatting]);
+
+  const showAccountCol = report.scopeType !== "account";
+  const holdingsReport = report.holdings ?? null;
+  const isLoading = !holdingsReport;
+  const rows = holdingsReport?.rows ?? EMPTY_DRIFT_ROWS;
+  const baseCurrency = holdingsReport?.baseCurrency ?? report.baseCurrency;
+  const holdingCount = useMemo(() => new Set(rows.map((row) => row.holdingId)).size, [rows]);
+
+  function navigateToHolding(row: DriftHoldingRow) {
+    if (!canNavigateToHolding(row)) return;
+    navigate(`/holdings/${encodeURIComponent(row.assetId)}`);
+  }
+
+  return (
+    <Card>
+      <CardHeader className="px-4 pt-4 pb-2 md:px-6 md:pt-6 md:pb-3">
+        <CardTitle className="text-base">{t("allocation:holdings.title")}</CardTitle>
+        <CardDescription>
+          {isLoading ? (
+            t("allocation:holdings.loading")
+          ) : (
+            <>
+              <span className="md:hidden">
+                {t("allocation:holdings.summary", { count: holdingCount, currency: baseCurrency })}
+              </span>
+              <span className="hidden md:inline">
+                {t("allocation:holdings.summaryUpdated", {
+                  count: holdingCount,
+                  currency: baseCurrency,
+                  updatedAt,
+                })}
+              </span>
+            </>
+          )}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="p-0">
+        <div className="divide-y md:hidden">
+          {rows.map((row) => {
+            const canNavigate = canNavigateToHolding(row);
+            return (
+              <button
+                key={row.id}
+                type="button"
+                disabled={!canNavigate}
+                className={cn(
+                  "focus-visible:ring-ring block w-full px-4 py-2.5 text-start outline-none focus-visible:ring-2 focus-visible:ring-inset",
+                  canNavigate ? "hover:bg-muted/30" : "cursor-default",
+                )}
+                onClick={() => navigateToHolding(row)}
+              >
+                <div className="grid grid-cols-[1.75rem_minmax(0,1fr)_auto] gap-x-3 gap-y-1">
+                  <div className="row-span-2 flex items-center">
+                    <HoldingAvatar
+                      isCash={row.isCash}
+                      symbol={row.symbol}
+                      assetId={row.assetId}
+                      exchangeMic={row.exchangeMic}
+                      instrumentType={row.instrumentType}
+                      className="size-7"
+                    />
+                  </div>
+
+                  <div className="flex min-w-0 items-baseline gap-1.5">
+                    <span className="text-foreground shrink-0 text-xs font-semibold">
+                      {row.symbol}
+                    </span>
+                    <span className="text-muted-foreground truncate text-xs">{row.name}</span>
+                  </div>
+                  <span className="text-foreground text-end text-xs font-medium tabular-nums">
+                    {formatting.formatAmount(row.value, baseCurrency)}
+                  </span>
+
+                  <div className="text-muted-foreground text-2xs flex min-w-0 items-center gap-1.5">
+                    {row.categoryColor && (
+                      <span
+                        className="h-1.5 w-1.5 shrink-0 rounded-full"
+                        style={{ background: row.categoryColor }}
+                      />
+                    )}
+                    <span className="truncate">{row.categoryName}</span>
+                  </div>
+                  <span
+                    className={cn(
+                      "text-2xs text-end font-medium tabular-nums",
+                      row.driftBps != null ? driftColor(row.driftBps) : "text-muted-foreground",
+                    )}
+                  >
+                    {row.driftBps != null ? formatPp(row.driftBps) : "—"}
+                  </span>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="hidden overflow-x-auto md:block">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-muted-foreground text-2xs border-b tracking-wider uppercase">
+                <th className="py-2.5 ps-6 pe-3 text-start font-medium">
+                  {t("allocation:holdings.colHolding")}
+                </th>
+                <th className="py-2.5 pe-3 text-start font-medium">
+                  {t("allocation:holdings.colCategory")}
+                </th>
+                <th className="py-2.5 pe-3 text-end font-medium">
+                  {t("allocation:holdings.colValue")}
+                </th>
+                <th className="py-2.5 pe-3 text-end font-medium">
+                  {t("allocation:holdings.colCurrent")}
+                </th>
+                <th className="py-2.5 pe-3 text-end font-medium">
+                  {t("allocation:holdings.colTarget")}
+                </th>
+                <th className="py-2.5 pe-3 text-end font-medium">
+                  {t("allocation:holdings.colDrift")}
+                </th>
+                {showAccountCol && (
+                  <th className="py-2.5 ps-2 pe-6 text-end font-medium">
+                    {t("allocation:holdings.colAccount")}
+                  </th>
+                )}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => {
+                const canNavigate = canNavigateToHolding(row);
+                return (
+                  <tr
+                    key={row.id}
+                    tabIndex={canNavigate ? 0 : -1}
+                    className={cn(
+                      "h-11 border-b outline-none last:border-b-0",
+                      canNavigate
+                        ? "hover:bg-muted/30 focus-visible:bg-muted/30 cursor-pointer"
+                        : "cursor-default",
+                    )}
+                    onClick={() => navigateToHolding(row)}
+                    onKeyDown={(event) => {
+                      if (!canNavigate) return;
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        navigateToHolding(row);
+                      }
+                    }}
+                  >
+                    <td className="ps-6 pe-3">
+                      <div className="flex min-w-70 items-center gap-2">
+                        <HoldingAvatar
+                          isCash={row.isCash}
+                          symbol={row.symbol}
+                          assetId={row.assetId}
+                          exchangeMic={row.exchangeMic}
+                          instrumentType={row.instrumentType}
+                        />
+                        <div className="flex min-w-0 items-baseline gap-2">
+                          <span className="text-foreground shrink-0 text-xs font-semibold">
+                            {row.symbol}
+                          </span>
+                          <span className="text-muted-foreground max-w-82.5 truncate text-xs">
+                            {row.name}
+                          </span>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="pe-3">
+                      <div className="flex items-center gap-1.5">
+                        {row.categoryColor && (
+                          <span
+                            className="h-1.5 w-1.5 shrink-0 rounded-full"
+                            style={{ background: row.categoryColor }}
+                          />
+                        )}
+                        <span className="min-w-0">
+                          <span className="text-muted-foreground block truncate text-xs">
+                            {row.categoryName}
+                          </span>
+                          {row.isUnknownCategory && (
+                            <span className="text-muted-foreground/80 text-2xs block max-w-55 truncate">
+                              {t("allocation:holdings.notMapped")}
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                    </td>
+                    <td className="text-foreground pe-3 text-end tabular-nums">
+                      {formatting.formatAmount(row.value, baseCurrency)}
+                    </td>
+                    <td className="text-foreground pe-3 text-end font-medium tabular-nums">
+                      {numberFormatting.formatPercent(row.currentPct / 100, { digits: 2 })}
+                    </td>
+                    <td className="text-muted-foreground pe-3 text-end tabular-nums">
+                      {row.targetPct != null
+                        ? numberFormatting.formatPercent(row.targetPct / 100, { digits: 2 })
+                        : "—"}
+                    </td>
+                    <td
+                      className={cn(
+                        "pe-3 text-end font-medium tabular-nums",
+                        row.driftBps != null ? driftColor(row.driftBps) : "text-muted-foreground",
+                      )}
+                    >
+                      {row.driftBps != null ? formatPp(row.driftBps) : "—"}
+                    </td>
+                    {showAccountCol && (
+                      <td className="text-muted-foreground ps-2 pe-6 text-end">
+                        {accountLabelForRow(row, accountMap, t)}
+                      </td>
+                    )}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
